@@ -149,13 +149,9 @@ def make_npzs_signal(N=5000):
         total=N):
         ntup_to_npz_signal(event, outdir + f'/{i_event}.npz')
 
-
-
 def main():
-    # make_npzs_signal()
-    # make_npzs_bkg()
-    dataset = ZPrimeDataset('data')
-
+    make_npzs_signal()
+    make_npzs_bkg()
 
 if __name__ == '__main__':
     main()
