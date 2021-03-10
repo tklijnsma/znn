@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import os.path as osp, glob, numpy as np, sys, os, glob
 import torch
 from torch_geometric.data import (Data, Dataset)
@@ -5,9 +8,56 @@ import tqdm
 import json
 import uptools
 import seutils
+from math import pi
 
 import random
 random.seed(1001)
+
+
+
+class ExtremaRecorder():
+    '''
+    Records the min and max of a set of values
+    Doesn't store the values unless the standard deviation is requested too
+    '''
+    def __init__(self, do_std=True):
+        self.min = 1e6
+        self.max = -1e6
+        self.mean = 0.
+        self.n = 0
+        self.do_std = do_std
+        if self.do_std: self.values = np.array([])
+
+    def update(self, values):
+        self.min = min(self.min, np.min(values))
+        self.max = max(self.max, np.max(values))
+        n_new = self.n + len(values)
+        self.mean = (self.mean * self.n + np.sum(values)) / n_new
+        self.n = n_new
+        if self.do_std: self.values = np.concatenate((self.values, values))
+
+    def std(self):
+        if self.do_std:
+            return np.std(self.values)
+        else:
+            return 0.
+
+    def __repr__(self):
+        return (
+            '{self.min:+7.3f} to {self.max:+7.3f}, mean={self.mean:+7.3f}{std} ({self.n})'
+            .format(
+                self=self,
+                std='+-{:.3f}'.format(self.std()) if self.do_std else ''
+                )
+            )
+
+    def hist(self, outfile):
+        import matplotlib.pyplot as plt
+        figure = plt.figure()
+        ax = figure.gca()
+        ax.hist(self.values, bins=25)
+        plt.savefig(outfile, bbox_inches='tight')
+
 
 class ZPrimeDataset(Dataset):
     """PyTorch geometric dataset from processed hit information"""
@@ -36,35 +86,56 @@ class ZPrimeDataset(Dataset):
         # print('Loading', self.processed_dir+'/'+self.processed_files[i])
         data = torch.load(self.processed_dir+'/'+self.processed_files[i])
         return data
+
+    def npz_to_features(self, npz_file):
+        d = np.load(npz_file)
+        deta = d['eta'] - d['jet_eta']
+        deta /= 2.
+
+        dphi = d['phi'] - d['jet_phi']
+        dphi %= 2.*pi # Map to 0..2pi range
+        dphi[dphi > pi] = dphi[dphi > pi] - 2.*pi # Map >pi to -pi..0 range
+        dphi /= 2. # Normalize to approximately -1..1 range
+                   # (jet size is 1.5, but some things extend up to 2.)
+
+        # Normalizations kind of guestimated so that 2 standard deviations are within 0..1
+        pt = d['pt'] / 30.
+        energy = d['energy'] / 100.
+
+        return pt, deta, dphi, energy
     
     def process(self):
-        max_pt = -1e6
-        max_eta = -1e6
-        max_phi = -1e6
-        max_energy = -1e6
         for i, f in tqdm.tqdm(enumerate(self.raw_file_names), total=len(self.raw_file_names)):
-            d = np.load(self.raw_dir + '/' + f)
             is_bkg = f.startswith('qcd')
-            x = np.stack((
-                torch.from_numpy(d['pt']),
-                torch.from_numpy(d['eta']),
-                torch.from_numpy(d['phi']),
-                torch.from_numpy(d['energy']),
-                )).T
+            pt, deta, dphi, energy = self.npz_to_features(self.raw_dir + '/' + f)
+            x = np.stack((pt,deta,dphi,energy)).T
             data = Data(
                 x = torch.from_numpy(x),
-                y = torch.tensor([0. if is_bkg else 1.])
+                y = torch.LongTensor([0 if is_bkg else 1])
                 )
             torch.save(data, self.processed_dir + f'/data_{i}.pt')
-            max_pt = max(np.max(np.abs(d['pt'])), max_pt)
-            max_eta = max(np.max(np.abs(d['eta'])), max_eta)
-            max_phi = max(np.max(np.abs(d['phi'])), max_phi)
-            max_energy = max(np.max(np.abs(d['energy'])), max_energy)
+
+    def extrema(self):
+        ext_pt = ExtremaRecorder()
+        ext_eta = ExtremaRecorder()
+        ext_phi = ExtremaRecorder()
+        ext_energy = ExtremaRecorder()
+        for i, f in tqdm.tqdm(enumerate(self.raw_file_names), total=len(self.raw_file_names)):
+            is_bkg = f.startswith('qcd')
+            pt, deta, dphi, energy = self.npz_to_features(self.raw_dir + '/' + f)
+            ext_pt.update(pt)
+            ext_eta.update(deta)
+            ext_phi.update(dphi)
+            ext_energy.update(energy)
         print('Max dims:')
-        print('pt:', max_pt)
-        print('eta:', max_eta)
-        print('phi:', max_phi)
-        print('energy:', max_energy)
+        print('pt:    ', ext_pt)
+        print('eta:   ', ext_eta)
+        print('phi:   ', ext_phi)
+        print('energy:', ext_energy)
+        ext_pt.hist('extrema_pt.png')
+        ext_eta.hist('extrema_eta.png')
+        ext_phi.hist('extrema_phi.png')
+        ext_energy.hist('extrema_energy.png')
 
 
 def ntup_to_npz_signal(event, outfile):
@@ -86,28 +157,40 @@ def ntup_to_npz_signal(event, outfile):
         eta = constituents.eta,
         phi = constituents.phi,
         energy = constituents.energy,
-        y = 1.
+        y = 1,
+        jet_pt = zjet.pt,
+        jet_eta = zjet.eta,
+        jet_phi = zjet.phi,
+        jet_energy = zjet.energy,        
         )
 
 def ntup_to_npz_bkg(event, outfile):
     '''
     Just dumps the two leading jets to outfiles
     '''
-    all_constituents = (
+    jets = uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu', event)
+    constituents = (
         uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu_constituents', event)
         .flatten()
         .unflatten(event[b'ak15GenJetsPackedNoNu_nConstituents'])
         )
-    for title, constituents in [ ('leading', all_constituents[0]), ('subleading', all_constituents[1]) ]:
-        constituents = constituents.flatten()
+    for i in [0, 1]:
+        # Do leading and subleading
+        this_jet = jets[i]
+        this_constituents = constituents[i].flatten()
+        title = ['leading', 'subleading'][i]
         if not osp.isdir(osp.dirname(outfile)): os.makedirs(osp.dirname(outfile))
         np.savez(
             outfile.replace('.npz', '_'+ title + '.npz'),
-            pt = constituents.pt,
-            eta = constituents.eta,
-            phi = constituents.phi,
-            energy = constituents.energy,
-            y = 0.
+            pt = this_constituents.pt,
+            eta = this_constituents.eta,
+            phi = this_constituents.phi,
+            energy = this_constituents.energy,
+            y = 0,
+            jet_pt = this_jet.pt,
+            jet_eta = this_jet.eta,
+            jet_phi = this_jet.phi,
+            jet_energy = this_jet.energy,
             )
 
 def iter_arrays_qcd(N):
@@ -150,8 +233,27 @@ def make_npzs_signal(N=5000):
         ntup_to_npz_signal(event, outdir + f'/{i_event}.npz')
 
 def main():
-    make_npzs_signal()
-    make_npzs_bkg()
+    import argparse, shutil
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        'action', type=str,
+        choices=['reprocess', 'extrema', 'fromscratch'],
+        )
+    args = parser.parse_args()
+
+    if args.action == 'fromscratch':
+        if osp.isdir('data'): shutil.rmtree('data')
+        make_npzs_signal()
+        make_npzs_bkg()
+        ZPrimeDataset('data')
+
+    elif args.action == 'reprocess':
+        if osp.isdir('data/processed'): shutil.rmtree('data/processed')
+        ZPrimeDataset('data')
+
+    elif args.action == 'extrema':
+        ZPrimeDataset('data').extrema()
+
 
 if __name__ == '__main__':
     main()

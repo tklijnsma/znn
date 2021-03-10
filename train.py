@@ -302,10 +302,15 @@ class DynamicReductionNetwork(nn.Module):
                                     nn.Linear(hidden_dim//2, output_dim))
 
     def forward(self, data):
-        data.x = self.datanorm * data.x
-        data.x = self.inputnet(data.x)
+        # data.x = self.datanorm * data.x # Normalization taken care of in preproc
+        # eta_phi = data.x[:,1:3]        
+        # data.x = data.x[:,1:] # Strip off pt
 
-        data.edge_index = to_undirected(knn_graph(data.x, self.k, data.batch, loop=False, flow=self.edgeconv1.flow))
+        # print(data.x)
+        # raise Exception
+
+        data.x = self.inputnet(data.x)
+        data.edge_index = to_undirected(knn_graph(data.x[:,1:3], self.k, data.batch, loop=False, flow=self.edgeconv1.flow))
         data.x = self.edgeconv1(data.x, data.edge_index)
 
         weight = normalized_cut_2d(data.edge_index, data.x)
@@ -337,50 +342,70 @@ def print_model_summary(model):
     )
 
 def main():
-    from data import ZPrimeDataset
+    from dataset import ZPrimeDataset
     dataset = ZPrimeDataset('data')
 
-    batch_size = 24
+    n_epochs = 20
+    # n_epochs = 20
+    # n_epochs = 400
+
+    batch_size = 16
     n_validation = math.ceil(len(dataset)*0.2)
     n_train = len(dataset) - n_validation
+    train_indices = list(range(n_train))
+    test_indices = list(range(n_train, n_train+n_validation))
 
-    # batch_size = 4
-    # n_train = 50
-    # n_validation = 20
+    # train_indices = [1]
+    # test_indices = [1]
     
-    train_batch_size = batch_size
-    test_batch_size = batch_size
-    train_dataset = torch.utils.data.Subset(dataset, list(range(n_train)))
-    test_dataset = torch.utils.data.Subset(dataset, list(range(n_train, n_train+n_validation)))
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    test_dataset = torch.utils.data.Subset(dataset, test_indices)
     train_dataset.indices = list(train_dataset.indices)
     test_dataset.indices = list(test_dataset.indices)
-    train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     epoch_size = len(train_dataset)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = DynamicReductionNetwork().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
-    scheduler = CyclicLRWithRestarts(optimizer, batch_size, epoch_size, restart_period=400, t_mult=1.2, policy="cosine")
+    print('Using device', device)
+    model = DynamicReductionNetwork(hidden_dim=64, k=16).to(device)
+
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=1e-4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-6, momentum=0.9, weight_decay=1e-3, nesterov=True)
+
+    scheduler = CyclicLRWithRestarts(optimizer, batch_size, epoch_size, restart_period=400, t_mult=1.1, policy="cosine")
 
     print_model_summary(model)
 
+    nsig = 0
+    for data in tqdm.tqdm(train_loader, total=len(train_loader)):
+        nsig += data.y.sum()
+    s_over_n = float(nsig/len(train_dataset))
+    print('sig/total=', s_over_n)
+    loss_weights = torch.tensor([s_over_n, 1.-s_over_n]).to(device)
+
     def train(epoch):
+        print('Training epoch', epoch)
         model.train()
         scheduler.step()
-
-        print('Looping over train data')
 
         for data in tqdm.tqdm(train_loader, total=len(train_loader)):
             data = data.to(device)
             optimizer.zero_grad()
             result = model(data)
 
+            # probabilities = torch.nn.functional.softmax(result, dim=1)
+            # pred = probabilities.argmax(1)
+            # print('probabilities=', probabilities)
+            # print('pred=', pred)
+            # print('data.y=', data.y)
+            # raise Exception
+
             # print('y =', data.y)
             # print('result =', result)
             # print('Sizes of y and result:', data.y.size(), result.size())
 
-            loss = F.nll_loss(result, data.y.type(torch.LongTensor))
+            loss = F.nll_loss(result, data.y, weight=loss_weights)
             loss.backward()
 
             #print(torch.unique(torch.argmax(result, dim=-1)))
@@ -390,28 +415,46 @@ def main():
             scheduler.batch_step()
 
     def test():
-        model.eval()
-        correct = 0        
-        for data in test_loader:
-            data = data.to(device)
-            result = model(data)
-            probabilities = torch.nn.functional.softmax(result, dim=1)
-            pred = probabilities.argmax()
+        with torch.no_grad():
+            model.eval()
+            correct = 0
+            n_signal_pred = 0
+            avg_bkg_prob = 0.
+            for data in test_loader:
+                data = data.to(device)
+                result = model(data)
+                probabilities = torch.nn.functional.softmax(result, dim=1)
 
-            # print('probabilities=', probabilities)
-            # print('pred=', pred)
-            # print('data.y=', data.y)
+                pred = torch.argmax(probabilities, dim=-1)
+                # print('probabilities=', probabilities)
+                # print('pred=', pred)
+                # print('data.y=', data.y)
 
-            correct += pred.eq(data.y).sum().item()
-        return correct / len(test_dataset)
+                correct += pred.eq(data.y).sum().item()
+                n_signal_pred += int(pred.sum())
+                avg_bkg_prob += probabilities[:,0].sum()
+
+            n_test = len(test_dataset)
+            return (
+                correct / n_test,
+                n_signal_pred / n_test,
+                avg_bkg_prob / n_test
+                )
 
 
     best_test_acc = 0.0
-    for epoch in range(1, 401):
+    for epoch in range(1, 1+n_epochs):
         train(epoch)
-        test_acc = test()
+        test_acc, r_sig_predicted, avg_bkg_prob = test()
         # write_checkpoint(epoch)
-        print('Epoch: {:02d}, Test: {:.4f}'.format(epoch, test_acc))
+        print(
+            'Epoch: {:02d}, Test acc: {:.4f}  (predicted {:.0f}% sig {:.0f}% bkg, avg_bkg_prob={:.4f})'
+            .format(
+                epoch, test_acc,
+                100.*r_sig_predicted, 100.*(1-r_sig_predicted),
+                avg_bkg_prob
+                )
+            )
         if test_acc > best_test_acc:
             best_test_acc = test_acc
             # write_checkpoint(epoch, best=True)
