@@ -143,7 +143,7 @@ def ntup_to_npz_signal(event, outfile):
     zjet = uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu', event, branches=[b'energyFromZ'])[select_zjet]
     if zjet.energyFromZ / zjet.energy < 0.01:
         print('Skipping event: zjet.energyFromZ / zjet.energy = ', zjet.energyFromZ / zjet.energy)
-        return
+        return False
     constituents = (
         uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu_constituents', event, b'isfromz')
         .flatten()
@@ -163,6 +163,7 @@ def ntup_to_npz_signal(event, outfile):
         jet_phi = zjet.phi,
         jet_energy = zjet.energy,        
         )
+    return True
 
 def ntup_to_npz_bkg(event, outfile):
     '''
@@ -227,10 +228,19 @@ def make_npzs_signal(N=5000):
         'Feb23_mz150_rinv0.1_mdark10/*.root'
         )
     outdir = 'data/raw/' + osp.basename(osp.dirname(signal[0]))
+    n_failed = 0
+    n_total = 0
     for i_event, event in tqdm.tqdm(
         enumerate(uptools.iter_events(signal, treepath='gensubntupler/tree', nmax=N)),
         total=N):
-        ntup_to_npz_signal(event, outdir + f'/{i_event}.npz')
+        succeeded = ntup_to_npz_signal(event, outdir + f'/{i_event}.npz')
+        if not succeeded: n_failed += 1
+        n_total += 1
+    print(
+        'Total events turned into npzs: {}  ({} failures due to 0 Z-energy)'
+        .format(n_total, n_failed)
+        )
+
 
 def main():
     import argparse, shutil
