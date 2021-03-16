@@ -38,6 +38,8 @@ import math
 import torch
 import sys
 
+from sklearn.metrics import confusion_matrix
+
 
 class ReduceMaxLROnRestart:
     def __init__(self, ratio=0.75):
@@ -310,7 +312,7 @@ class DynamicReductionNetwork(nn.Module):
         # raise Exception
 
         data.x = self.inputnet(data.x)
-        data.edge_index = to_undirected(knn_graph(data.x[:,1:3], self.k, data.batch, loop=False, flow=self.edgeconv1.flow))
+        data.edge_index = to_undirected(knn_graph(data.x, self.k, data.batch, loop=False, flow=self.edgeconv1.flow))
         data.x = self.edgeconv1(data.x, data.edge_index)
 
         weight = normalized_cut_2d(data.edge_index, data.x)
@@ -341,37 +343,45 @@ def print_model_summary(model):
         (model, sum(p.numel() for p in model.parameters()))
     )
 
-def main():
-    from dataset import ZPrimeDataset
-    dataset = ZPrimeDataset('data')
 
-    n_epochs = 20
-    # n_epochs = 20
-    # n_epochs = 400
-
+def get_loaders(dataset, batch_size=16, validation_fraction=0.2):
     batch_size = 16
-    n_validation = math.ceil(len(dataset)*0.2)
+    n_validation = math.ceil(len(dataset)*validation_fraction)
     n_train = len(dataset) - n_validation
     train_indices = list(range(n_train))
     test_indices = list(range(n_train, n_train+n_validation))
 
-    # train_indices = [1]
-    # test_indices = [1]
-    
     train_dataset = torch.utils.data.Subset(dataset, train_indices)
     test_dataset = torch.utils.data.Subset(dataset, test_indices)
     train_dataset.indices = list(train_dataset.indices)
     test_dataset.indices = list(test_dataset.indices)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    return train_dataset, test_dataset, train_loader, test_loader
+
+
+def main():
+    from time import strftime
+    ckpt_dir = strftime('ckpts_%b%d_%H%M%S')
+
+    from dataset import ZPrimeDataset
+    dataset = ZPrimeDataset('data')
+
+    # n_epochs = 20
+    # n_epochs = 20
+    n_epochs = 400
+    # n_epochs = 3
+
+    batch_size = 16
+    train_dataset, test_dataset, train_loader, test_loader = get_loaders(dataset)
 
     epoch_size = len(train_dataset)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Using device', device)
     model = DynamicReductionNetwork(hidden_dim=64, k=16).to(device)
 
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=1e-4)
-    optimizer = torch.optim.SGD(model.parameters(), lr=1e-6, momentum=0.9, weight_decay=1e-3, nesterov=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=1e-4)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=1e-5, momentum=0.9, weight_decay=1e-3, nesterov=True)
 
     scheduler = CyclicLRWithRestarts(optimizer, batch_size, epoch_size, restart_period=400, t_mult=1.1, policy="cosine")
 
@@ -383,6 +393,14 @@ def main():
     s_over_n = float(nsig/len(train_dataset))
     print('sig/total=', s_over_n)
     loss_weights = torch.tensor([s_over_n, 1.-s_over_n]).to(device)
+    # loss_weights = torch.tensor([1., 4.]).to(device)
+
+    def write_checkpoint(checkpoint_number=None, best=False):
+        ckpt = 'ckpt_best.pth.tar' if best else 'ckpt_{0}.pth.tar'.format(checkpoint_number)
+        ckpt = osp.join(ckpt_dir, ckpt)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        if best: print('Saving epoch {0} as new best'.format(checkpoint_number))
+        torch.save(dict(model=model.state_dict()), ckpt)
 
     def train(epoch):
         print('Training epoch', epoch)
@@ -393,8 +411,7 @@ def main():
             data = data.to(device)
             optimizer.zero_grad()
             result = model(data)
-
-            # probabilities = torch.nn.functional.softmax(result, dim=1)
+            probabilities = torch.nn.functional.softmax(result, dim=1)
             # pred = probabilities.argmax(1)
             # print('probabilities=', probabilities)
             # print('pred=', pred)
@@ -405,7 +422,7 @@ def main():
             # print('result =', result)
             # print('Sizes of y and result:', data.y.size(), result.size())
 
-            loss = F.nll_loss(result, data.y, weight=loss_weights)
+            loss = F.nll_loss(probabilities, data.y, weight=loss_weights)
             loss.backward()
 
             #print(torch.unique(torch.argmax(result, dim=-1)))
@@ -417,47 +434,47 @@ def main():
     def test():
         with torch.no_grad():
             model.eval()
+
             correct = 0
-            n_signal_pred = 0
-            avg_bkg_prob = 0.
-            for data in test_loader:
+            pred = np.zeros(len(test_dataset), dtype=np.int8)
+            truth = np.zeros(len(test_dataset), dtype=np.int8)
+
+            for i, data in enumerate(test_loader):
                 data = data.to(device)
                 result = model(data)
                 probabilities = torch.nn.functional.softmax(result, dim=1)
 
-                pred = torch.argmax(probabilities, dim=-1)
+                predictions = torch.argmax(probabilities, dim=-1)
                 # print('probabilities=', probabilities)
                 # print('pred=', pred)
                 # print('data.y=', data.y)
 
-                correct += pred.eq(data.y).sum().item()
-                n_signal_pred += int(pred.sum())
-                avg_bkg_prob += probabilities[:,0].sum()
+                correct += predictions.eq(data.y).sum().item()
+                pred[i*batch_size:(i+1)*batch_size] = predictions.cpu()
+                truth[i*batch_size:(i+1)*batch_size] = data.y.cpu()
 
-            n_test = len(test_dataset)
-            return (
-                correct / n_test,
-                n_signal_pred / n_test,
-                avg_bkg_prob / n_test
+            print(confusion_matrix(truth, pred, labels=[0,1]))
+            acc = correct / len(test_dataset)
+            print(
+                'Epoch: {:02d}, Test acc: {:.4f}'
+                .format(epoch, acc)
                 )
+            return acc
 
+
+    test_accs = []
 
     best_test_acc = 0.0
     for epoch in range(1, 1+n_epochs):
         train(epoch)
-        test_acc, r_sig_predicted, avg_bkg_prob = test()
-        # write_checkpoint(epoch)
-        print(
-            'Epoch: {:02d}, Test acc: {:.4f}  (predicted {:.0f}% sig {:.0f}% bkg, avg_bkg_prob={:.4f})'
-            .format(
-                epoch, test_acc,
-                100.*r_sig_predicted, 100.*(1-r_sig_predicted),
-                avg_bkg_prob
-                )
-            )
+        test_acc = test()
+        write_checkpoint(epoch)
         if test_acc > best_test_acc:
             best_test_acc = test_acc
-            # write_checkpoint(epoch, best=True)
+            write_checkpoint(epoch, best=True)
+        test_accs.append(test_acc)
+
+    np.savez(osp.join(ckpt_dir, 'testaccs.npz'), testaccs=test_accs)
 
 if __name__ == '__main__':
     main()

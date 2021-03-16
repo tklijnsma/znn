@@ -142,7 +142,7 @@ def ntup_to_npz_signal(event, outfile):
     select_zjet = event[b'ak15GenJetsPackedNoNu_energyFromZ'].argmax()
     zjet = uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu', event, branches=[b'energyFromZ'])[select_zjet]
     if zjet.energyFromZ / zjet.energy < 0.01:
-        print('Skipping event: zjet.energyFromZ / zjet.energy = ', zjet.energyFromZ / zjet.energy)
+        # print('Skipping event: zjet.energyFromZ / zjet.energy = ', zjet.energyFromZ / zjet.energy)
         return False
     constituents = (
         uptools.Vectors.from_prefix(b'ak15GenJetsPackedNoNu_constituents', event, b'isfromz')
@@ -217,15 +217,16 @@ def iter_events_qcd(N):
         for i in range(uptools.numentries(arrays)):
             yield uptools.get_event(arrays, i)
 
-def make_npzs_bkg(N=5000):
+def make_npzs_bkg(N=8000):
     for i_event, event in tqdm.tqdm(enumerate(iter_events_qcd(N)), total=N):
         ntup_to_npz_bkg(event, f'data/raw/qcd/{i_event}.npz')
 
 
-def make_npzs_signal(N=5000):
+def make_npzs_signal(N=10000):
     signal = seutils.ls_wildcard(
         'root://cmseos.fnal.gov//store/user/lpcsusyhad/SVJ2017/boosted/ecfntuples/'
-        'Feb23_mz150_rinv0.1_mdark10/*.root'
+        # 'Feb23_mz150_rinv0.1_mdark10/*.root'
+        'Mar15_mz150_rinv0.1_mdark10/*.root'
         )
     outdir = 'data/raw/' + osp.basename(osp.dirname(signal[0]))
     n_failed = 0
