@@ -76,6 +76,7 @@ class ZPrimeDataset(Dataset):
     def processed_file_names(self):
         if not hasattr(self,'processed_files'):
             self.processed_files = [ f'data_{i}.pt' for i in range(len(self.raw_file_names)) ]
+            self.unshuffled_processed_files = self.processed_files[:]
             random.shuffle(self.processed_files)
         return self.processed_files
     
@@ -86,6 +87,12 @@ class ZPrimeDataset(Dataset):
         # print('Loading', self.processed_dir+'/'+self.processed_files[i])
         data = torch.load(self.processed_dir+'/'+self.processed_files[i])
         return data
+
+    def get_original_features(self, i):
+        procfile = self.processed_files[i]
+        i_unshuffled = self.unshuffled_processed_files.index(procfile)
+        npzfile = self.raw_dir + '/' + self.raw_file_names[i_unshuffled]
+        return np.load(npzfile)
 
     def npz_to_features(self, npz_file):
         d = np.load(npz_file)
@@ -218,28 +225,33 @@ def iter_events_qcd(N):
             yield uptools.get_event(arrays, i)
 
 def make_npzs_bkg(N=8000):
+    train_outdir = 'data/train/raw/qcd'
+    test_outdir = 'data/test/raw/qcd'
     for i_event, event in tqdm.tqdm(enumerate(iter_events_qcd(N)), total=N):
-        ntup_to_npz_bkg(event, f'data/raw/qcd/{i_event}.npz')
+        outdir = test_outdir if i_event % 5 == 0 else train_outdir
+        ntup_to_npz_bkg(event, outdir + f'{i_event}.npz')
 
 
-def make_npzs_signal(N=10000):
-    signal = seutils.ls_wildcard(
-        'root://cmseos.fnal.gov//store/user/lpcsusyhad/SVJ2017/boosted/ecfntuples/'
-        # 'Feb23_mz150_rinv0.1_mdark10/*.root'
-        'Mar15_mz150_rinv0.1_mdark10/*.root'
-        )
-    outdir = 'data/raw/' + osp.basename(osp.dirname(signal[0]))
-    n_failed = 0
+def make_npzs_signal():
+    directory = 'root://cmseos.fnal.gov//store/user/lpcsusyhad/SVJ2017/boosted/ecfntuples/Mar16_mz150_rinv0.1_mdark10'
+    N = seutils.root.sum_dataset(directory, treepath='gensubntupler/tree')
+    signal = seutils.ls_wildcard(directory + '/*.root')
+    signal_name = osp.basename(osp.dirname(signal[0]))
+    train_outdir = 'data/train/raw/' + signal_name
+    test_outdir = 'data/test/raw/' + signal_name
     n_total = 0
+    i_event_good = 0
     for i_event, event in tqdm.tqdm(
         enumerate(uptools.iter_events(signal, treepath='gensubntupler/tree', nmax=N)),
-        total=N):
-        succeeded = ntup_to_npz_signal(event, outdir + f'/{i_event}.npz')
-        if not succeeded: n_failed += 1
+        total=N
+        ):
+        outdir = test_outdir if i_event_good % 5 == 0 else train_outdir
+        succeeded = ntup_to_npz_signal(event, outdir + f'/{i_event_good}.npz')
+        if succeeded: i_event_good += 1
         n_total += 1
     print(
-        'Total events turned into npzs: {}  ({} failures due to 0 Z-energy)'
-        .format(n_total, n_failed)
+        'Total events turned into npzs: {}/{}  ({} failures due to 0 Z-energy)'
+        .format(i_event_good, n_total, n_total-i_event_good)
         )
 
 
@@ -256,14 +268,16 @@ def main():
         if osp.isdir('data'): shutil.rmtree('data')
         make_npzs_signal()
         make_npzs_bkg()
-        ZPrimeDataset('data')
+        ZPrimeDataset('data/train')
+        ZPrimeDataset('data/test')
 
     elif args.action == 'reprocess':
         if osp.isdir('data/processed'): shutil.rmtree('data/processed')
-        ZPrimeDataset('data')
+        ZPrimeDataset('data/train')
+        ZPrimeDataset('data/test')
 
     elif args.action == 'extrema':
-        ZPrimeDataset('data').extrema()
+        ZPrimeDataset('data/train').extrema()
 
 
 if __name__ == '__main__':
