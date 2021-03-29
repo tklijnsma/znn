@@ -344,17 +344,10 @@ def print_model_summary(model):
     )
 
 
-def get_loaders(dataset, batch_size=16, validation_fraction=0.2):
-    batch_size = 16
-    n_validation = math.ceil(len(dataset)*validation_fraction)
-    n_train = len(dataset) - n_validation
-    train_indices = list(range(n_train))
-    test_indices = list(range(n_train, n_train+n_validation))
-
-    train_dataset = torch.utils.data.Subset(dataset, train_indices)
-    test_dataset = torch.utils.data.Subset(dataset, test_indices)
-    train_dataset.indices = list(train_dataset.indices)
-    test_dataset.indices = list(test_dataset.indices)
+def get_loaders(batch_size=16, validation_fraction=0.2):
+    from dataset import ZPrimeDataset
+    train_dataset = ZPrimeDataset('data/train')
+    test_dataset = ZPrimeDataset('data/test')
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_dataset, test_dataset, train_loader, test_loader
@@ -364,16 +357,13 @@ def main():
     from time import strftime
     ckpt_dir = strftime('ckpts_%b%d_%H%M%S')
 
-    from dataset import ZPrimeDataset
-    dataset = ZPrimeDataset('data')
-
     # n_epochs = 20
     # n_epochs = 20
     n_epochs = 400
     # n_epochs = 3
 
     batch_size = 16
-    train_dataset, test_dataset, train_loader, test_loader = get_loaders(dataset)
+    train_dataset, test_dataset, train_loader, test_loader = get_loaders()
 
     epoch_size = len(train_dataset)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

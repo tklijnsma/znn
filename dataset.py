@@ -10,8 +10,7 @@ import uptools
 import seutils
 from math import pi
 
-import random
-random.seed(1001)
+np.random.seed(1001)
 
 
 
@@ -68,7 +67,7 @@ class ZPrimeDataset(Dataset):
     @property
     def raw_file_names(self):
         if not hasattr(self, '_raw_file_names'):
-            self._raw_file_names = [osp.relpath(f, self.raw_dir) for f in glob.iglob(self.raw_dir + '/*/*.npz')]
+            self._raw_file_names = [osp.relpath(f, self.raw_dir) for f in sorted(glob.iglob(self.raw_dir + '/*/*.npz'))]
             self._raw_file_names.sort()
         return self._raw_file_names
     
@@ -77,7 +76,7 @@ class ZPrimeDataset(Dataset):
         if not hasattr(self,'processed_files'):
             self.processed_files = [ f'data_{i}.pt' for i in range(len(self.raw_file_names)) ]
             self.unshuffled_processed_files = self.processed_files[:]
-            random.shuffle(self.processed_files)
+            np.random.shuffle(self.processed_files)
         return self.processed_files
     
     def __len__(self):
@@ -229,7 +228,7 @@ def make_npzs_bkg(N=8000):
     test_outdir = 'data/test/raw/qcd'
     for i_event, event in tqdm.tqdm(enumerate(iter_events_qcd(N)), total=N):
         outdir = test_outdir if i_event % 5 == 0 else train_outdir
-        ntup_to_npz_bkg(event, outdir + f'{i_event}.npz')
+        ntup_to_npz_bkg(event, outdir + f'/{i_event}.npz')
 
 
 def make_npzs_signal():
