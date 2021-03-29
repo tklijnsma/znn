@@ -344,7 +344,7 @@ def print_model_summary(model):
     )
 
 
-def get_loaders(batch_size=16, validation_fraction=0.2):
+def get_loaders(batch_size=16):
     from dataset import ZPrimeDataset
     train_dataset = ZPrimeDataset('data/train')
     test_dataset = ZPrimeDataset('data/test')
