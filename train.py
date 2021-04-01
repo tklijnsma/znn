@@ -401,7 +401,7 @@ def main():
             data = data.to(device)
             optimizer.zero_grad()
             result = model(data)
-            probabilities = torch.nn.functional.softmax(result, dim=1)
+            log_probabilities = torch.nn.functional.log_softmax(result, dim=1)
             # pred = probabilities.argmax(1)
             # print('probabilities=', probabilities)
             # print('pred=', pred)
@@ -412,7 +412,7 @@ def main():
             # print('result =', result)
             # print('Sizes of y and result:', data.y.size(), result.size())
 
-            loss = F.nll_loss(probabilities, data.y, weight=loss_weights)
+            loss = F.nll_loss(log_probabilities, data.y, weight=loss_weights)
             loss.backward()
 
             #print(torch.unique(torch.argmax(result, dim=-1)))
@@ -432,8 +432,7 @@ def main():
             for i, data in enumerate(test_loader):
                 data = data.to(device)
                 result = model(data)
-                probabilities = torch.nn.functional.softmax(result, dim=1)
-
+                probabilities = torch.exp(torch.nn.functional.log_softmax(result, dim=1))
                 predictions = torch.argmax(probabilities, dim=-1)
                 # print('probabilities=', probabilities)
                 # print('pred=', pred)
