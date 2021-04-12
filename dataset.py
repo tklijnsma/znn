@@ -107,17 +107,17 @@ class ZPrimeDataset(Dataset):
         # Normalizations kind of guestimated so that 2 standard deviations are within 0..1
         pt = d['pt'] / 30.
         energy = d['energy'] / 100.
-
-        return pt, deta, dphi, energy
+        return pt, deta, dphi, energy, np.array([d['jet_pt'], d['jet_eta'], d['jet_phi'], d['jet_energy']])
     
     def process(self):
         for i, f in tqdm.tqdm(enumerate(self.raw_file_names), total=len(self.raw_file_names)):
             is_bkg = f.startswith('qcd')
-            pt, deta, dphi, energy = self.npz_to_features(self.raw_dir + '/' + f)
+            pt, deta, dphi, energy, jet4vec = self.npz_to_features(self.raw_dir + '/' + f)
             x = np.stack((pt,deta,dphi,energy)).T
             data = Data(
                 x = torch.from_numpy(x),
-                y = torch.LongTensor([0 if is_bkg else 1])
+                y = torch.LongTensor([0 if is_bkg else 1]),
+                jet4vec = torch.from_numpy(jet4vec)
                 )
             torch.save(data, self.processed_dir + f'/data_{i}.pt')
 
@@ -271,7 +271,8 @@ def main():
         ZPrimeDataset('data/test')
 
     elif args.action == 'reprocess':
-        if osp.isdir('data/processed'): shutil.rmtree('data/processed')
+        if osp.isdir('data/train/processed'): shutil.rmtree('data/train/processed')
+        if osp.isdir('data/test/processed'): shutil.rmtree('data/test/processed')
         ZPrimeDataset('data/train')
         ZPrimeDataset('data/test')
 
