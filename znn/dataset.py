@@ -128,7 +128,7 @@ class ZPrimeDataset(Dataset):
         ext_energy = ExtremaRecorder()
         for i, f in tqdm.tqdm(enumerate(self.raw_file_names), total=len(self.raw_file_names)):
             is_bkg = f.startswith('qcd')
-            pt, deta, dphi, energy = self.npz_to_features(self.raw_dir + '/' + f)
+            pt, deta, dphi, energy, jet4vec = self.npz_to_features(self.raw_dir + '/' + f)
             ext_pt.update(pt)
             ext_eta.update(deta)
             ext_phi.update(dphi)
@@ -252,33 +252,3 @@ def make_npzs_signal():
         'Total events turned into npzs: {}/{}  ({} failures due to 0 Z-energy)'
         .format(i_event_good, n_total, n_total-i_event_good)
         )
-
-
-def main():
-    import argparse, shutil
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        'action', type=str,
-        choices=['reprocess', 'extrema', 'fromscratch'],
-        )
-    args = parser.parse_args()
-
-    if args.action == 'fromscratch':
-        if osp.isdir('data'): shutil.rmtree('data')
-        make_npzs_signal()
-        make_npzs_bkg()
-        ZPrimeDataset('data/train')
-        ZPrimeDataset('data/test')
-
-    elif args.action == 'reprocess':
-        if osp.isdir('data/train/processed'): shutil.rmtree('data/train/processed')
-        if osp.isdir('data/test/processed'): shutil.rmtree('data/test/processed')
-        ZPrimeDataset('data/train')
-        ZPrimeDataset('data/test')
-
-    elif args.action == 'extrema':
-        ZPrimeDataset('data/train').extrema()
-
-
-if __name__ == '__main__':
-    main()
